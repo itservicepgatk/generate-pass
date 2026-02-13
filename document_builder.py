@@ -1,4 +1,4 @@
-"""Сборка Word-документа (работает с байтами в памяти)"""
+"""Сборка Word-документа — ФИКСИРОВАННЫЕ РАЗМЕРЫ"""
 
 import io
 from PIL import Image
@@ -6,6 +6,8 @@ from docx import Document
 from docx.shared import Cm, Mm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_ROW_HEIGHT_RULE
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 
 from config import PassConfig
 from card_renderer import CardRenderer
@@ -26,11 +28,6 @@ class DocumentBuilder:
         logo_bytes: bytes | None = None,
         progress_cb=None,
     ) -> bytes:
-        """
-        photos:  {"Иванов Иван Иванович": b"...", ...}
-        logo_bytes: байты логотипа или None
-        Возвращает байты .docx
-        """
         logo_pil = None
         if logo_bytes:
             logo_pil = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
@@ -42,7 +39,6 @@ class DocumentBuilder:
         done = 0
 
         for ci, chunk in enumerate(chunks):
-            # ── Лицевые ──
             if ci > 0:
                 doc.add_page_break()
             tf = self._table(doc)
@@ -55,7 +51,6 @@ class DocumentBuilder:
                 if progress_cb:
                     progress_cb(done / (total * 2))
 
-            # ── Оборотные ──
             doc.add_page_break()
             tb = self._table(doc)
 
@@ -70,7 +65,7 @@ class DocumentBuilder:
         doc.save(buf)
         return buf.getvalue()
 
-    # ── Внутренние ─────────────────────────────────
+    # ── Приватные ──────────────────────────────────
 
     def _new_doc(self):
         doc = Document()
@@ -82,11 +77,19 @@ class DocumentBuilder:
 
     def _table(self, doc):
         t = doc.add_table(rows=4, cols=2)
-        t.autofit = t.allow_autofit = False
+        t.autofit = False
+        t.allow_autofit = False
         t.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        cw = Cm(self.cfg.card_w + 0.5)
+
+        # ══ ФИКС: ширина колонки = ТОЧНО размер карточки ══
+        cw = Cm(self.cfg.card_w)
         for c in t.columns:
             c.width = cw
+
+        # ══ ФИКС: убираем отступы ячеек таблицы ══
+        self._set_zero_cell_margins(t)
+        self._remove_table_borders(t)
+
         return t
 
     def _insert(self, table, row, col, card_img: Image.Image):
@@ -95,9 +98,89 @@ class DocumentBuilder:
         buf.seek(0)
 
         cell = table.rows[row].cells[col]
-        cell.width = Cm(self.cfg.card_w + 0.5)
+
+        # ══ ФИКС: ширина ячейки = точно размер карточки ══
+        cell.width = Cm(self.cfg.card_w)
+
+        # ══ ФИКС: убираем отступы конкретной ячейки ══
+        self._set_zero_single_cell_margin(cell)
+
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.add_run().add_picture(buf, width=Cm(self.cfg.card_w), height=Cm(self.cfg.card_h))
+
+        # Убираем отступы параграфа
+        pf = p.paragraph_format
+        pf.space_before = Cm(0)
+        pf.space_after = Cm(0)
+
+        p.add_run().add_picture(
+            buf,
+            width=Cm(self.cfg.card_w),
+            height=Cm(self.cfg.card_h),
+        )
+
+        # ══ ФИКС: высота строки = ТОЧНО размер карточки ══
         table.rows[row].height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
-        table.rows[row].height = Cm(self.cfg.card_h + 0.2)
+        table.rows[row].height = Cm(self.cfg.card_h)
+
+    # ── XML-фиксы для точных размеров ─────────────
+
+    @staticmethod
+    def _set_zero_cell_margins(table):
+        """Убирает ВСЕ отступы ячеек на уровне таблицы"""
+        tbl = table._tbl
+        tblPr = tbl.tblPr
+        if tblPr is None:
+            tblPr = OxmlElement('w:tblPr')
+            tbl.insert(0, tblPr)
+
+        # Удаляем старые настройки отступов
+        for old in tblPr.findall(qn('w:tblCellMar')):
+            tblPr.remove(old)
+
+        tcMar = OxmlElement('w:tblCellMar')
+        for side in ('top', 'left', 'bottom', 'right'):
+            node = OxmlElement(f'w:{side}')
+            node.set(qn('w:w'), '0')
+            node.set(qn('w:type'), 'dxa')
+            tcMar.append(node)
+        tblPr.append(tcMar)
+
+    @staticmethod
+    def _set_zero_single_cell_margin(cell):
+        """Убирает отступы конкретной ячейки"""
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+
+        for old in tcPr.findall(qn('w:tcMar')):
+            tcPr.remove(old)
+
+        tcMar = OxmlElement('w:tcMar')
+        for side in ('top', 'left', 'bottom', 'right'):
+            node = OxmlElement(f'w:{side}')
+            node.set(qn('w:w'), '0')
+            node.set(qn('w:type'), 'dxa')
+            tcMar.append(node)
+        tcPr.append(tcMar)
+
+    @staticmethod
+    def _remove_table_borders(table):
+        """Убирает все видимые рамки таблицы"""
+        tbl = table._tbl
+        tblPr = tbl.tblPr
+        if tblPr is None:
+            tblPr = OxmlElement('w:tblPr')
+            tbl.insert(0, tblPr)
+
+        for old in tblPr.findall(qn('w:tblBorders')):
+            tblPr.remove(old)
+
+        borders = OxmlElement('w:tblBorders')
+        for side in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+            b = OxmlElement(f'w:{side}')
+            b.set(qn('w:val'), 'none')
+            b.set(qn('w:sz'), '0')
+            b.set(qn('w:space'), '0')
+            b.set(qn('w:color'), 'auto')
+            borders.append(b)
+        tblPr.append(borders)

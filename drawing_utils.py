@@ -1,4 +1,4 @@
-"""Утилиты рисования — шрифты, градиенты, примитивы"""
+"""Утилиты рисования — ИСПРАВЛЕНЫ"""
 
 import os
 from typing import Tuple, Dict
@@ -9,9 +9,11 @@ from photo_utils import PhotoUtils
 
 class DrawingUtils:
 
+    # ── Шрифты ─────────────────────────────────────
+
     @staticmethod
     def get_fonts(cfg: PassConfig) -> Dict[str, ImageFont.FreeTypeFont]:
-        """Загрузка шрифтов с несколькими уровнями fallback"""
+        """Загрузка шрифтов — несколько уровней fallback"""
         bold = DrawingUtils._find_font(cfg, [
             "DejaVuSans-Bold.ttf", "arialbd.ttf", "LiberationSans-Bold.ttf"
         ])
@@ -22,38 +24,43 @@ class DrawingUtils:
             "DejaVuSerif.ttf", "times.ttf", "LiberationSerif-Regular.ttf"
         ])
 
-        def load(path, size):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                try:
-                    return ImageFont.truetype(path.split("/")[-1], size)
-                except Exception:
-                    return ImageFont.load_default()
-
         return {
-            "header": load(bold, 70),
-            "org":    load(bold, 36),
-            "label":  load(regular, 28),
-            "value":  load(serif, 36),
-            "udost":  load(bold, 56),
-            "small":  load(regular, 24),
-            "tiny":   load(regular, 20),
+            "header": DrawingUtils._load_font(bold, 70),
+            "org":    DrawingUtils._load_font(bold, 36),
+            "label":  DrawingUtils._load_font(regular, 28),
+            "value":  DrawingUtils._load_font(serif, 36),
+            "udost":  DrawingUtils._load_font(bold, 56),
+            "small":  DrawingUtils._load_font(regular, 24),
+            "tiny":   DrawingUtils._load_font(regular, 20),
         }
 
     @staticmethod
     def _find_font(cfg: PassConfig, candidates: list) -> str:
+        """Ищет первый доступный шрифт"""
         for name in candidates:
+            # В папке fonts/
             path = cfg.font_path(name)
             if os.path.exists(path):
                 return path
-            # Попробуем системный
+            # Системный
             try:
                 ImageFont.truetype(name, 12)
                 return name
             except Exception:
                 continue
         return candidates[0]
+
+    @staticmethod
+    def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
+        """Загружает шрифт с fallback"""
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            try:
+                # Пробуем только имя файла (системный шрифт)
+                return ImageFont.truetype(os.path.basename(path), size)
+            except Exception:
+                return ImageFont.load_default()
 
     # ── Градиент ───────────────────────────────────
 
@@ -64,7 +71,7 @@ class DrawingUtils:
         r1, g1, b1 = DrawingUtils.hex2rgb(c1)
         r2, g2, b2 = DrawingUtils.hex2rgb(c2)
         for y in range(h):
-            t = y / h
+            t = y / max(h, 1)
             draw.line([(0, y), (w, y)], fill=(
                 int(r1 + (r2 - r1) * t),
                 int(g1 + (g2 - g1) * t),
@@ -109,35 +116,34 @@ class DrawingUtils:
     # ── Фото с рамкой ─────────────────────────────
 
     @staticmethod
-    def add_photo(
-        img: Image.Image,
-        photo_pil: Image.Image,
-        x: int, y: int,
-        size: Tuple[int, int],
-        border_color="#FFFFFF",
-        border_w=8,
-    ) -> int:
-        """Вставляет PIL-фото с рамкой. Возвращает правую границу."""
-        tw, th = size
-        ratio = min(tw / photo_pil.width, th / photo_pil.height)
-        nw, nh = int(photo_pil.width * ratio), int(photo_pil.height * ratio)
-        resized = photo_pil.resize((nw, nh), Image.Resampling.LANCZOS)
+    def add_photo(img, photo_pil, x, y, size, border_color="#FFFFFF", border_w=8) -> int:
+        """Вставляет фото, возвращает ПРАВУЮ границу"""
+        try:
+            tw, th = size
+            ratio = min(tw / photo_pil.width, th / photo_pil.height)
+            nw, nh = int(photo_pil.width * ratio), int(photo_pil.height * ratio)
+            resized = photo_pil.resize((nw, nh), Image.Resampling.LANCZOS)
 
-        canvas = Image.new("RGB", size, "white")
-        canvas.paste(resized, ((tw - nw) // 2, (th - nh) // 2))
+            canvas = Image.new("RGB", size, "white")
+            canvas.paste(resized, ((tw - nw) // 2, (th - nh) // 2))
 
-        bw = border_w
-        bordered = Image.new("RGB", (tw + bw * 2, th + bw * 2), border_color)
-        bordered.paste(canvas, (bw, bw))
+            bw = border_w
+            bordered = Image.new("RGB", (tw + bw * 2, th + bw * 2), border_color)
+            bordered.paste(canvas, (bw, bw))
 
-        shadow = Image.new("RGBA", bordered.size, (0, 0, 0, 0))
-        ImageDraw.Draw(shadow).rectangle(
-            [0, 0, bordered.width, bordered.height], fill=(0, 0, 0, 30)
-        )
-        shadow = shadow.filter(ImageFilter.GaussianBlur(8))
-        img.paste(shadow, (x - 4, y + 4), shadow)
-        img.paste(bordered, (x, y))
-        return x + bordered.width
+            # Тень
+            shadow = Image.new("RGBA", bordered.size, (0, 0, 0, 0))
+            ImageDraw.Draw(shadow).rectangle(
+                [0, 0, bordered.width, bordered.height], fill=(0, 0, 0, 30)
+            )
+            shadow = shadow.filter(ImageFilter.GaussianBlur(8))
+            img.paste(shadow, (x - 4, y + 4), shadow)
+            img.paste(bordered, (x, y))
+
+            return x + bordered.width
+        except Exception as e:
+            print(f"  ⚠️ Ошибка фото: {e}")
+            return x
 
     # ── Перенос текста ─────────────────────────────
 
@@ -158,7 +164,7 @@ class DrawingUtils:
             lines.append(" ".join(cur))
         return lines or [text]
 
-    # ── Рамка ──────────────────────────────────────
+    # ── Рамка карточки ─────────────────────────────
 
     @staticmethod
     def card_border(draw, w, h, color, width=4):
