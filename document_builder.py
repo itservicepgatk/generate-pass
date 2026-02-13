@@ -1,4 +1,4 @@
-"""Сборка Word-документа — ФИКСИРОВАННЫЕ РАЗМЕРЫ"""
+"""Сборка Word-документа — точные размеры + отступы для резки"""
 
 import io
 from PIL import Image
@@ -81,13 +81,14 @@ class DocumentBuilder:
         t.allow_autofit = False
         t.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        # ══ ФИКС: ширина колонки = ТОЧНО размер карточки ══
-        cw = Cm(self.cfg.card_w)
+        # ══ Ширина колонки = карточка + отступ для резки ══
+        margin = self.cfg.cut_margin
+        col_w = Cm(self.cfg.card_w + margin * 2)
         for c in t.columns:
-            c.width = cw
+            c.width = col_w
 
-        # ══ ФИКС: убираем отступы ячеек таблицы ══
-        self._set_zero_cell_margins(t)
+        # ══ Небольшие отступы ячеек для зазора между карточками ══
+        self._set_cell_margins(t, margin)
         self._remove_table_borders(t)
 
         return t
@@ -97,75 +98,61 @@ class DocumentBuilder:
         card_img.save(buf, format="PNG")
         buf.seek(0)
 
+        margin = self.cfg.cut_margin
         cell = table.rows[row].cells[col]
-
-        # ══ ФИКС: ширина ячейки = точно размер карточки ══
-        cell.width = Cm(self.cfg.card_w)
-
-        # ══ ФИКС: убираем отступы конкретной ячейки ══
-        self._set_zero_single_cell_margin(cell)
+        cell.width = Cm(self.cfg.card_w + margin * 2)
 
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        # Убираем отступы параграфа
+        # Убираем лишние отступы параграфа
         pf = p.paragraph_format
         pf.space_before = Cm(0)
         pf.space_after = Cm(0)
 
+        # ══ Картинка = ТОЧНО размер карточки ══
         p.add_run().add_picture(
             buf,
             width=Cm(self.cfg.card_w),
             height=Cm(self.cfg.card_h),
         )
 
-        # ══ ФИКС: высота строки = ТОЧНО размер карточки ══
+        # ══ Высота строки = карточка + отступы сверху/снизу ══
         table.rows[row].height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
-        table.rows[row].height = Cm(self.cfg.card_h)
+        table.rows[row].height = Cm(self.cfg.card_h + margin * 2)
 
-    # ── XML-фиксы для точных размеров ─────────────
+    # ── XML-утилиты ────────────────────────────────
 
     @staticmethod
-    def _set_zero_cell_margins(table):
-        """Убирает ВСЕ отступы ячеек на уровне таблицы"""
+    def _set_cell_margins(table, margin_cm: float):
+        """
+        Устанавливает отступы ячеек таблицы.
+        margin_cm — отступ в сантиметрах с каждой стороны.
+        """
         tbl = table._tbl
         tblPr = tbl.tblPr
         if tblPr is None:
             tblPr = OxmlElement('w:tblPr')
             tbl.insert(0, tblPr)
 
-        # Удаляем старые настройки отступов
+        # Удаляем старые
         for old in tblPr.findall(qn('w:tblCellMar')):
             tblPr.remove(old)
+
+        # 1 см = 567 twips (единица измерения Word)
+        twips = int(margin_cm * 567)
 
         tcMar = OxmlElement('w:tblCellMar')
         for side in ('top', 'left', 'bottom', 'right'):
             node = OxmlElement(f'w:{side}')
-            node.set(qn('w:w'), '0')
+            node.set(qn('w:w'), str(twips))
             node.set(qn('w:type'), 'dxa')
             tcMar.append(node)
         tblPr.append(tcMar)
 
     @staticmethod
-    def _set_zero_single_cell_margin(cell):
-        """Убирает отступы конкретной ячейки"""
-        tc = cell._tc
-        tcPr = tc.get_or_add_tcPr()
-
-        for old in tcPr.findall(qn('w:tcMar')):
-            tcPr.remove(old)
-
-        tcMar = OxmlElement('w:tcMar')
-        for side in ('top', 'left', 'bottom', 'right'):
-            node = OxmlElement(f'w:{side}')
-            node.set(qn('w:w'), '0')
-            node.set(qn('w:type'), 'dxa')
-            tcMar.append(node)
-        tcPr.append(tcMar)
-
-    @staticmethod
     def _remove_table_borders(table):
-        """Убирает все видимые рамки таблицы"""
+        """Убирает видимые рамки таблицы (карточки и так с рамками)"""
         tbl = table._tbl
         tblPr = tbl.tblPr
         if tblPr is None:

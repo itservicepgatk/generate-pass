@@ -1,11 +1,12 @@
 """
-🎨 Генератор пропусков — веб-интерфейс
-Streamlit-приложение для создания и редактирования пропусков
+🪪 Генератор пропусков — веб-интерфейс
+Streamlit + логотип по умолчанию + отступы для резки
 """
 
 import streamlit as st
 from PIL import Image
 import io
+import os
 
 from config import PassConfig
 from card_renderer import CardRenderer
@@ -24,7 +25,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Кастомный CSS
 st.markdown("""
 <style>
     .main-header {
@@ -39,15 +39,6 @@ st.markdown("""
         color: #7F8C8D;
         margin-bottom: 2rem;
     }
-    .card-preview {
-        border: 2px solid #E0E0E0;
-        border-radius: 12px;
-        padding: 8px;
-        background: #FAFAFA;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
     .success-box {
         background: #D4EDDA;
         border: 1px solid #C3E6CB;
@@ -55,8 +46,30 @@ st.markdown("""
         padding: 1rem;
         text-align: center;
     }
+    .logo-info {
+        background: #E8F4FD;
+        border: 1px solid #B8DAFF;
+        border-radius: 8px;
+        padding: 0.7rem;
+        font-size: 0.85rem;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════
+#  УТИЛИТА: загрузка логотипа
+# ═══════════════════════════════════════════════════
+
+def load_default_logo(cfg: PassConfig) -> bytes | None:
+    """Загружает логотип по умолчанию если он есть"""
+    if cfg.has_default_logo():
+        try:
+            with open(cfg.default_logo_path(), "rb") as f:
+                return f.read()
+        except Exception as e:
+            st.sidebar.warning(f"Не удалось загрузить логотип: {e}")
+    return None
 
 
 # ═══════════════════════════════════════════════════
@@ -81,10 +94,30 @@ def render_sidebar() -> PassConfig:
     cfg.date_end = col2.text_input("Конец", cfg.date_end)
 
     # Размеры
-    st.sidebar.subheader("📐 Размеры (см)")
+    st.sidebar.subheader("📐 Размеры")
     col1, col2 = st.sidebar.columns(2)
-    cfg.card_w = col1.number_input("Ширина", 5.0, 15.0, cfg.card_w, 0.5)
-    cfg.card_h = col2.number_input("Высота", 4.0, 12.0, cfg.card_h, 0.5)
+    cfg.card_w = col1.number_input("Ширина (см)", 5.0, 15.0, cfg.card_w, 0.5)
+    cfg.card_h = col2.number_input("Высота (см)", 4.0, 12.0, cfg.card_h, 0.5)
+
+    # ══ ОТСТУПЫ ДЛЯ РЕЗКИ ══
+    st.sidebar.subheader("✂️ Отступы для резки")
+    cfg.cut_margin = st.sidebar.slider(
+        "Зазор между карточками (мм)",
+        min_value=0.0,
+        max_value=5.0,
+        value=2.0,
+        step=0.5,
+        help="Расстояние между карточками в документе для удобной резки",
+    ) / 10  # мм → см
+
+    if cfg.cut_margin > 0:
+        st.sidebar.caption(
+            f"📏 Карточка: {cfg.card_w}×{cfg.card_h} см (точно)\n\n"
+            f"📦 Ячейка: {cfg.card_w + cfg.cut_margin * 2:.1f}×"
+            f"{cfg.card_h + cfg.cut_margin * 2:.1f} см (с зазором)"
+        )
+    else:
+        st.sidebar.caption("⚠️ Без зазора — карточки будут впритык")
 
     # Цвета
     st.sidebar.subheader("🎨 Цвета")
@@ -103,12 +136,19 @@ def render_sidebar() -> PassConfig:
 #  ЗАГРУЗКА ФАЙЛОВ
 # ═══════════════════════════════════════════════════
 
-def render_upload() -> tuple:
+def render_upload(cfg: PassConfig) -> tuple:
     """Рендерит зону загрузки, возвращает (photos_dict, logo_bytes)"""
 
-    st.markdown('<p class="main-header">🪪 Генератор пропусков</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Загрузите фото сотрудников → настройте → скачайте готовый документ</p>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<p class="main-header">🪪 Генератор пропусков</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p class="sub-header">'
+        'Загрузите фото сотрудников → настройте → скачайте готовый документ'
+        '</p>',
+        unsafe_allow_html=True,
+    )
 
     col1, col2 = st.columns([3, 1])
 
@@ -124,24 +164,45 @@ def render_upload() -> tuple:
 
     with col2:
         st.subheader("🏛️ Логотип")
-        st.caption("Необязательно")
+
+        # ══ ЛОГОТИП ПО УМОЛЧАНИЮ ══
+        default_logo_bytes = load_default_logo(cfg)
+        has_default = default_logo_bytes is not None
+
+        if has_default:
+            st.markdown(
+                '<div class="logo-info">'
+                f'✅ Логотип по умолчанию: <b>{cfg.default_logo}</b>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption("Загрузите свой чтобы заменить ↓")
+
         uploaded_logo = st.file_uploader(
-            "Логотип организации",
+            "Свой логотип (необязательно)" if has_default else "Логотип организации",
             type=["jpg", "jpeg", "png"],
             key="logo",
         )
 
+    # Собираем фото
     photos = {}
     if uploaded_photos:
         for f in uploaded_photos:
-            fio = f.name.rsplit(".", 1)[0]  # убираем расширение
+            fio = f.name.rsplit(".", 1)[0]
             photos[fio] = f.read()
-            f.seek(0)  # сбрасываем позицию для повторного чтения
+            f.seek(0)
 
+    # ══ Определяем логотип: свой или по умолчанию ══
     logo_bytes = None
     if uploaded_logo:
+        # Пользователь загрузил свой — используем его
         logo_bytes = uploaded_logo.read()
         uploaded_logo.seek(0)
+        st.sidebar.success("🖼️ Используется загруженный логотип")
+    elif default_logo_bytes:
+        # Используем логотип по умолчанию
+        logo_bytes = default_logo_bytes
+        st.sidebar.info(f"🖼️ Используется {cfg.default_logo}")
 
     return photos, logo_bytes
 
@@ -151,7 +212,7 @@ def render_upload() -> tuple:
 # ═══════════════════════════════════════════════════
 
 def render_preview(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
-    """Показывает превью первых карточек"""
+    """Показывает превью карточек"""
     if not photos:
         st.info("👆 Загрузите фотографии сотрудников для начала работы")
         return
@@ -159,12 +220,17 @@ def render_preview(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
     st.divider()
     st.subheader(f"👁️ Превью ({len(photos)} сотрудников)")
 
+    # Показываем инфо о размерах
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📏 Размер карточки", f"{cfg.card_w} × {cfg.card_h} см")
+    col2.metric("✂️ Зазор для резки", f"{cfg.cut_margin * 10:.1f} мм")
+    col3.metric("🖼️ Логотип", "Есть ✅" if logo_bytes else "Нет ❌")
+
     renderer = CardRenderer(cfg)
     logo_pil = None
     if logo_bytes:
         logo_pil = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
-    # Показываем максимум 4 превью
     preview_names = list(photos.keys())[:4]
 
     for fio in preview_names:
@@ -193,7 +259,7 @@ def render_preview(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
 # ═══════════════════════════════════════════════════
 
 def render_generate(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
-    """Кнопка генерации и скачивания"""
+    """Кнопка генерации"""
     if not photos:
         return
 
@@ -204,6 +270,8 @@ def render_generate(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
     with col2:
         st.subheader("📄 Генерация документа")
         st.write(f"Будет создано **{len(photos)}** пропусков")
+        st.write(f"Размер: **{cfg.card_w}×{cfg.card_h}** см, "
+                 f"зазор: **{cfg.cut_margin * 10:.1f}** мм")
 
         if st.button("🚀 Сгенерировать .docx", type="primary", use_container_width=True):
             progress = st.progress(0, text="Генерация пропусков...")
@@ -215,7 +283,6 @@ def render_generate(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
             docx_bytes = builder.build(photos, logo_bytes, progress_cb=update_progress)
 
             progress.progress(1.0, text="✅ Готово!")
-
             st.balloons()
 
             st.download_button(
@@ -229,7 +296,8 @@ def render_generate(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
 
             st.markdown(
                 '<div class="success-box">'
-                f"✅ Создано <b>{len(photos)}</b> пропусков!"
+                f"✅ Создано <b>{len(photos)}</b> пропусков! "
+                f"Размер: {cfg.card_w}×{cfg.card_h} см"
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -241,13 +309,18 @@ def render_generate(cfg: PassConfig, photos: dict, logo_bytes: bytes | None):
 
 def main():
     cfg = render_sidebar()
-    photos, logo_bytes = render_upload()
+    photos, logo_bytes = render_upload(cfg)
     render_preview(cfg, photos, logo_bytes)
     render_generate(cfg, photos, logo_bytes)
 
     # Футер
     st.divider()
-    st.caption("🪪 Генератор пропусков v2.0 | Streamlit + Python")
+    col1, col2 = st.columns(2)
+    col1.caption("🪪 Генератор пропусков v2.1")
+    col2.caption(
+        f"📏 Карточка: {cfg.card_w}×{cfg.card_h} см | "
+        f"✂️ Зазор: {cfg.cut_margin * 10:.1f} мм"
+    )
 
 
 if __name__ == "__main__":

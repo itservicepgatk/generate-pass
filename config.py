@@ -1,8 +1,8 @@
-"""Конфигурация — значения по умолчанию + путь к шрифтам"""
+"""Конфигурация генератора пропусков"""
 
 import os
 from typing import Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -13,6 +13,10 @@ class PassConfig:
     card_w: float = 9.5
     card_h: float = 6.5
     dpi: int = 300
+
+    # ══ ОТСТУП для резки (см) ══
+    # Расстояние между карточками в документе
+    cut_margin: float = 0.2  # 2мм с каждой стороны
 
     # Тексты
     date_start: str = "05.01.2026"
@@ -29,8 +33,10 @@ class PassConfig:
     text_light: str = "#FFFFFF"
     border_color: str = "#BDC3C7"
 
-    # Пути шрифтов
+    # Пути
     font_dir: str = "fonts"
+    assets_dir: str = "assets"
+    default_logo: str = "logo_pgatkk.png"
 
     def get_px(self) -> Tuple[int, int]:
         w = int(self.card_w / 2.54 * self.dpi)
@@ -39,3 +45,11 @@ class PassConfig:
 
     def font_path(self, name: str) -> str:
         return os.path.join(self.font_dir, name)
+
+    def default_logo_path(self) -> str:
+        """Полный путь к логотипу по умолчанию"""
+        return os.path.join(self.assets_dir, self.default_logo)
+
+    def has_default_logo(self) -> bool:
+        """Есть ли логотип по умолчанию"""
+        return os.path.exists(self.default_logo_path())
